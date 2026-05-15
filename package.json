@@ -1,0 +1,18 @@
+{
+  "name": "controle",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SaaS de gestão financeira inteligente para pequenas empresas com múltiplos sócios.",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=@controle/backend",
+    "dev:frontend": "npm run dev --workspace=@controle/frontend",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
