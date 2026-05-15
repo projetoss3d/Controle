@@ -1,0 +1,488 @@
+// =============================================================
+// CONTROLE — Schema Prisma
+// SaaS multi-tenant de gestão financeira inteligente.
+// Toda entidade de negócio carrega `tenantId` para isolamento.
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================
+// MULTI-TENANCY & ACESSO
+// =============================================================
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users            User[]
+  partners         Partner[]
+  customers        Customer[]
+  projects         Project[]
+  revenues         Revenue[]
+  installments     Installment[]
+  expenses         Expense[]
+  expenseCategories ExpenseCategory[]
+  serviceTypes     ServiceType[]
+  withdrawals      Withdrawal[]
+  timeEntries      TimeEntry[]
+  monthlyClosings  MonthlyClosing[]
+  attachments      Attachment[]
+  alerts           Alert[]
+  savedFilters     SavedFilter[]
+
+  @@index([slug])
+}
+
+enum Role {
+  ADMIN
+  PARTNER
+  COLLABORATOR
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  email        String
+  passwordHash String
+  name         String
+  role         Role     @default(COLLABORATOR)
+  partnerId    String?  @unique // se este usuário é também um sócio
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner  Partner? @relation(fields: [partnerId], references: [id])
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+}
+
+// =============================================================
+// SÓCIOS E REGRA SOCIETÁRIA
+// =============================================================
+
+enum PartnerType {
+  WORKING       // sócio operacional
+  INVESTOR      // sócio investidor
+  PRO_LABORE    // recebe pró-labore
+}
+
+model Partner {
+  id          String      @id @default(cuid())
+  tenantId    String
+  name        String
+  type        PartnerType @default(WORKING)
+  // % do lucro líquido distribuível que pertence a este sócio (0–100).
+  // O que sobrar (100 - soma de todos) permanece retido na empresa.
+  profitShare Decimal     @db.Decimal(5, 2) @default(0)
+  // valor/hora usado para custear o tempo do sócio em projetos
+  hourlyRate  Decimal?    @db.Decimal(12, 2)
+  // pró-labore mensal fixo, se aplicável
+  proLabore   Decimal?    @db.Decimal(12, 2)
+  active      Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?
+  revenues     Revenue[]     @relation("PartnerRevenues")
+  withdrawals  Withdrawal[]
+  timeEntries  TimeEntry[]
+
+  @@index([tenantId])
+}
+
+// =============================================================
+// CLIENTES (MINI CRM)
+// =============================================================
+
+model Customer {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  email     String?
+  phone     String?
+  document  String?  // CPF/CNPJ
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  projects Project[]
+  revenues Revenue[]
+  expenses Expense[]
+
+  @@index([tenantId])
+  @@index([tenantId, name])
+}
+
+// =============================================================
+// PROJETOS
+// =============================================================
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  tenantId    String
+  customerId  String?
+  name        String
+  description String?
+  status      ProjectStatus @default(ACTIVE)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer    Customer?    @relation(fields: [customerId], references: [id])
+  revenues    Revenue[]
+  expenses    Expense[]
+  timeEntries TimeEntry[]
+
+  @@index([tenantId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status])
+}
+
+// =============================================================
+// TIPOS DE SERVIÇO (customizáveis por tenant)
+// =============================================================
+
+model ServiceType {
+  id        String   @id @default(cuid())
+  tenantId  String
+  // chaves padrão: print3d, design3d, planned_furniture, social_media, custom
+  key       String
+  label     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  revenues Revenue[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+}
+
+// =============================================================
+// RECEITAS + PARCELAMENTO
+// =============================================================
+
+enum RevenueStatus {
+  CONTRACTED   // contratada (não recebida ainda)
+  PARTIAL      // parcialmente recebida
+  PAID         // totalmente recebida
+  CANCELLED
+}
+
+model Revenue {
+  id                 String        @id @default(cuid())
+  tenantId           String
+  customerId         String?
+  projectId          String?
+  serviceTypeId      String?
+  partnerInChargeId  String?       // sócio responsável
+  description        String
+  // valor contratado total
+  amount             Decimal       @db.Decimal(14, 2)
+  // custo direto opcional informado já na receita (pode também vir via Expense vinculada)
+  directCost         Decimal       @db.Decimal(14, 2) @default(0)
+  status             RevenueStatus @default(CONTRACTED)
+  issuedAt           DateTime      // data da venda/contrato
+  notes              String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer     Customer?     @relation(fields: [customerId], references: [id])
+  project      Project?      @relation(fields: [projectId], references: [id])
+  serviceType  ServiceType?  @relation(fields: [serviceTypeId], references: [id])
+  partner      Partner?      @relation("PartnerRevenues", fields: [partnerInChargeId], references: [id])
+  installments Installment[]
+  expenses     Expense[]
+  attachments  Attachment[]
+
+  @@index([tenantId, issuedAt])
+  @@index([tenantId, customerId])
+  @@index([tenantId, projectId])
+  @@index([tenantId, partnerInChargeId])
+  @@index([tenantId, status])
+}
+
+enum InstallmentStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+model Installment {
+  id         String            @id @default(cuid())
+  tenantId   String
+  revenueId  String
+  number     Int               // 1, 2, 3...
+  amount     Decimal           @db.Decimal(14, 2)
+  dueDate    DateTime
+  paidAt     DateTime?
+  status     InstallmentStatus @default(PENDING)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  revenue Revenue @relation(fields: [revenueId], references: [id], onDelete: Cascade)
+
+  @@unique([revenueId, number])
+  @@index([tenantId, dueDate])
+  @@index([tenantId, status])
+}
+
+// =============================================================
+// DESPESAS (com categoria customizável)
+// =============================================================
+
+enum ExpenseKind {
+  FIXED
+  VARIABLE
+}
+
+enum ExpenseNature {
+  DIRECT      // custo direto (atribuível a projeto/cliente)
+  INDIRECT    // custo indireto (rateado)
+  OPERATIONAL // operacional geral
+}
+
+model ExpenseCategory {
+  id        String   @id @default(cuid())
+  tenantId  String
+  // chaves padrão: material, tool, marketing, transport, energy, software, labor, subscription, custom
+  key       String
+  label     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  expenses Expense[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+}
+
+model Expense {
+  id          String        @id @default(cuid())
+  tenantId    String
+  categoryId  String?
+  customerId  String?
+  projectId   String?
+  revenueId   String?       // despesa vinculada a uma receita específica
+  description String
+  amount      Decimal       @db.Decimal(14, 2)
+  kind        ExpenseKind   @default(VARIABLE)
+  nature      ExpenseNature @default(OPERATIONAL)
+  recurring   Boolean       @default(false)
+  // se recorrente: dia do mês para próxima geração
+  recurrenceDay Int?
+  occurredAt  DateTime
+  notes       String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category    ExpenseCategory?  @relation(fields: [categoryId], references: [id])
+  customer    Customer?         @relation(fields: [customerId], references: [id])
+  project     Project?          @relation(fields: [projectId], references: [id])
+  revenue     Revenue?          @relation(fields: [revenueId], references: [id])
+  attachments Attachment[]
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, categoryId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, projectId])
+  @@index([tenantId, nature])
+}
+
+// =============================================================
+// CONTROLE DE TEMPO POR PROJETO
+// =============================================================
+
+model TimeEntry {
+  id          String   @id @default(cuid())
+  tenantId    String
+  partnerId   String
+  projectId   String
+  hours       Decimal  @db.Decimal(8, 2)
+  // valor/hora aplicado nesta entrada (snapshot do hourlyRate do sócio)
+  hourlyRate  Decimal  @db.Decimal(12, 2)
+  workedAt    DateTime
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner Partner @relation(fields: [partnerId], references: [id])
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, projectId])
+  @@index([tenantId, partnerId])
+  @@index([tenantId, workedAt])
+}
+
+// =============================================================
+// RETIRADAS / VALES DE SÓCIO
+// Cada retirada afeta APENAS o saldo individual do sócio.
+// =============================================================
+
+enum WithdrawalType {
+  ADVANCE          // vale / antecipação
+  PRO_LABORE
+  PROFIT_DISTRIBUTION
+  LOAN
+  OTHER
+}
+
+model Withdrawal {
+  id          String         @id @default(cuid())
+  tenantId    String
+  partnerId   String
+  type        WithdrawalType @default(ADVANCE)
+  amount      Decimal        @db.Decimal(14, 2)
+  occurredAt  DateTime
+  description String?
+  createdAt   DateTime       @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  partner Partner @relation(fields: [partnerId], references: [id])
+
+  @@index([tenantId, partnerId])
+  @@index([tenantId, occurredAt])
+}
+
+// =============================================================
+// FECHAMENTO MENSAL (snapshot histórico)
+// =============================================================
+
+model MonthlyClosing {
+  id              String   @id @default(cuid())
+  tenantId        String
+  year            Int
+  month           Int      // 1-12
+  // snapshots calculados no fechamento
+  grossRevenue    Decimal  @db.Decimal(14, 2) @default(0)
+  receivedRevenue Decimal  @db.Decimal(14, 2) @default(0)
+  directCosts     Decimal  @db.Decimal(14, 2) @default(0)
+  indirectCosts   Decimal  @db.Decimal(14, 2) @default(0)
+  operationalCosts Decimal @db.Decimal(14, 2) @default(0)
+  grossProfit     Decimal  @db.Decimal(14, 2) @default(0)
+  netProfit       Decimal  @db.Decimal(14, 2) @default(0)
+  distributable   Decimal  @db.Decimal(14, 2) @default(0)
+  retained        Decimal  @db.Decimal(14, 2) @default(0)
+  // detalhamento por sócio em JSON: [{partnerId, share, amount, withdrawn, balance}]
+  partnerBreakdown Json?
+  closedAt        DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, year, month])
+  @@index([tenantId])
+}
+
+// =============================================================
+// ANEXOS (storage S3-compatible via driver)
+// =============================================================
+
+model Attachment {
+  id         String   @id @default(cuid())
+  tenantId   String
+  revenueId  String?
+  expenseId  String?
+  filename   String
+  mimeType   String
+  size       Int
+  // chave no storage (ex.: tenants/<id>/revenues/<id>/<uuid>.pdf)
+  storageKey String
+  createdAt  DateTime @default(now())
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  revenue Revenue? @relation(fields: [revenueId], references: [id], onDelete: Cascade)
+  expense Expense? @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+// =============================================================
+// ALERTAS INTELIGENTES
+// =============================================================
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum AlertKind {
+  PROFIT_DROP
+  EXPENSE_SPIKE
+  OPERATIONAL_LOSS
+  NEGATIVE_CASHFLOW
+  OVERDUE_PAYMENT
+  EXCESSIVE_WITHDRAWAL
+  CUSTOM
+}
+
+model Alert {
+  id         String        @id @default(cuid())
+  tenantId   String
+  kind       AlertKind
+  severity   AlertSeverity @default(INFO)
+  title      String
+  message    String
+  // contexto para deep-link / cálculo (ex.: { partnerId, projectId })
+  context    Json?
+  read       Boolean       @default(false)
+  createdAt  DateTime      @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, read])
+  @@index([tenantId, createdAt])
+}
+
+// =============================================================
+// FILTROS SALVOS / DASHBOARDS CUSTOMIZADOS
+// =============================================================
+
+model SavedFilter {
+  id         String   @id @default(cuid())
+  tenantId   String
+  userId     String?  // se null = compartilhado com tenant
+  name       String
+  // alvo: "revenues" | "expenses" | "dashboard" | etc.
+  target     String
+  // payload do filtro (período, categorias, etc.)
+  payload    Json
+  // se virou widget de dashboard
+  asWidget   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, target])
+}

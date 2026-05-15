@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: controle-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-controle}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-controle}
+      POSTGRES_DB: ${POSTGRES_DB:-controle}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - controle_pg_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./apps/backend
+    container_name: controle-backend
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-controle}:${POSTGRES_PASSWORD:-controle}@postgres:5432/${POSTGRES_DB:-controle}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      BACKEND_PORT: ${BACKEND_PORT:-4000}
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"
+
+  frontend:
+    build:
+      context: ./apps/frontend
+    container_name: controle-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    ports:
+      - "3000:3000"
+
+volumes:
+  controle_pg_data:
