@@ -12,12 +12,15 @@ body {
 }
 
 body {
-  @apply bg-ink-50 text-ink-900 antialiased;
+  background-color: #f7f7f8;
+  color: #0e1118;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 /* Mobile-first: garantir tap targets confortáveis */
 button,
 a {
-  @apply touch-manipulation;
+  touch-action: manipulation;
 }
