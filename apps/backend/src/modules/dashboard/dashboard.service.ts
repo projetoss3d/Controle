@@ -66,7 +66,6 @@ export const dashboardService = {
       partners.map((p) => ({ partnerId: p.id, share: Number(p.profitShare) })),
     );
 
-    // saldo individual do sócio = distribuído - retiradas (no período).
     const withdrawnByPartner = new Map<string, number>();
     for (const w of withdrawals) {
       withdrawnByPartner.set(
@@ -104,4 +103,68 @@ export const dashboardService = {
       },
     };
   },
+
+  /**
+   * Série dos últimos N meses para gráfico:
+   * faturamento, custo total e lucro líquido por mês.
+   */
+  async monthlySeries({ tenantId, months = 6 }: { tenantId: string; months?: number }) {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth() - (months - 1), 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
+
+    const [revenues, expenses] = await Promise.all([
+      prisma.revenue.findMany({
+        where: { tenantId, issuedAt: { gte: start, lte: end } },
+        select: { amount: true, directCost: true, issuedAt: true },
+      }),
+      prisma.expense.findMany({
+        where: { tenantId, occurredAt: { gte: start, lte: end } },
+        select: { amount: true, nature: true, occurredAt: true },
+      }),
+    ]);
+
+    const buckets: Record<string, { revenue: number; direct: number; indirect: number; operational: number }> = {};
+    for (let i = 0; i < months; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+      const key = monthKey(d);
+      buckets[key] = { revenue: 0, direct: 0, indirect: 0, operational: 0 };
+    }
+
+    for (const r of revenues) {
+      const key = monthKey(r.issuedAt);
+      if (buckets[key]) {
+        buckets[key].revenue += Number(r.amount);
+        buckets[key].direct += Number(r.directCost);
+      }
+    }
+    for (const e of expenses) {
+      const key = monthKey(e.occurredAt);
+      if (!buckets[key]) continue;
+      const v = Number(e.amount);
+      if (e.nature === "DIRECT") buckets[key].direct += v;
+      else if (e.nature === "INDIRECT") buckets[key].indirect += v;
+      else buckets[key].operational += v;
+    }
+
+    return Object.entries(buckets).map(([month, b]) => {
+      const profit = computeProfit({
+        revenue: b.revenue,
+        directCosts: b.direct,
+        indirectCosts: b.indirect,
+        operationalCosts: b.operational,
+      });
+      return {
+        month,
+        revenue: b.revenue,
+        totalCost: Math.round((b.direct + b.indirect + b.operational) * 100) / 100,
+        netProfit: profit.netProfit,
+      };
+    });
+  },
 };
+
+function monthKey(d: Date | string): string {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`;
+}

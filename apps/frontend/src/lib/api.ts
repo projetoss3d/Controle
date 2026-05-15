@@ -29,3 +29,9 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
 
 export const formatBRL = (n: number): string =>
   new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(n);
+
+export const formatDate = (d: string | Date): string =>
+  new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
+
+export const formatMonth = (d: string | Date): string =>
+  new Date(d).toLocaleDateString("pt-BR", { month: "short", year: "2-digit" });

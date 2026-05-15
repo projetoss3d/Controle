@@ -32,3 +32,16 @@ dashboardRouter.get(
     res.json(result);
   }),
 );
+
+dashboardRouter.get(
+  "/monthly",
+  asyncHandler(async (req, res) => {
+    if (!req.auth) throw new AppError("Unauthenticated", 401);
+    const months = Number(req.query.months ?? 6);
+    const result = await dashboardService.monthlySeries({
+      tenantId: req.auth.tenantId,
+      months: Number.isFinite(months) ? Math.max(1, Math.min(24, months)) : 6,
+    });
+    res.json(result);
+  }),
+);
